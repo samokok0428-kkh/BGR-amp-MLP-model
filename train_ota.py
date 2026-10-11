@@ -12,10 +12,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import joblib
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-import joblib
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -81,6 +81,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", required=True, type=Path, help="Virtuoso export CSV")
     parser.add_argument("--out", type=Path, help="Result folder (default: runs/<preset>)")
+    parser.add_argument("--resume-from", type=Path,
+                        help="Continue training from a folder containing model.pt and both scalers; requires --out")
     parser.add_argument("--preset", choices=PRESETS, default="2stage")
     parser.add_argument("--inputs", nargs="+", help="Exact CSV input column names")
     parser.add_argument("--targets", nargs="+", help="Exact CSV output column names")
@@ -90,6 +92,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=40)
     parser.add_argument("--hidden", type=int, default=64)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--lr", type=float,
+                        help="Learning rate (default: 0.001 from scratch, 0.0001 when resuming)")
     return parser.parse_args()
 
 
@@ -122,6 +126,10 @@ def main() -> None:
     args = parse_args()
     if args.epochs < 1 or args.patience < 1 or args.hidden < 1 or args.batch_size < 1:
         raise ValueError("epochs, patience, hidden, and batch-size must be positive.")
+    if args.lr is not None and (not math.isfinite(args.lr) or args.lr <= 0):
+        raise ValueError("--lr must be a positive finite number.")
+    if args.resume_from and not args.out:
+        raise ValueError("--resume-from requires --out so the original model is preserved.")
     inputs = args.inputs or PRESETS[args.preset]["inputs"]
     targets = args.targets or PRESETS[args.preset]["targets"]
     if not inputs or not targets:
@@ -129,6 +137,8 @@ def main() -> None:
             f"{args.preset} needs both --inputs and --targets with the exact CSV headers."
         )
     out = args.out or Path("runs") / args.preset
+    if args.resume_from and out.resolve() == args.resume_from.resolve():
+        raise ValueError("--out must differ from --resume-from to preserve the original model.")
     columns = inputs + targets
     if len(columns) != len(set(columns)):
         raise ValueError("Input and target column names must be unique.")
@@ -155,12 +165,24 @@ def main() -> None:
     train_idx, val_idx, test_idx = split_indices(len(clean), args.seed)
     x = clean[inputs].to_numpy(dtype=np.float32)
     y = clean[targets].to_numpy(dtype=np.float32)
-    # 5) StandardScaler는 평균을 빼고 표준편차로 나눈다.
+    # 5) 처음 학습할 때만 scaler를 fit한다. 이어 학습에서는 기존 모델의 좌표계를 유지한다.
     # fit은 훈련 행에만 적용해야 검증/테스트 데이터 정보가 학습에 새지 않는다.
     # 출력도 스케일링하면 단위가 크게 다른 성능값들이 손실 함수에 고르게 반영된다.
-    x_scaler, y_scaler = StandardScaler(), StandardScaler()
-    x_scaler.fit(x[train_idx])
-    y_scaler.fit(y[train_idx])
+    checkpoint = None
+    if args.resume_from:
+        checkpoint = torch.load(args.resume_from / "model.pt", map_location="cpu", weights_only=True)
+        if checkpoint["inputs"] != inputs or checkpoint["targets"] != targets:
+            raise ValueError("New CSV input/target columns must match the saved model, in the same order.")
+        x_scaler = joblib.load(args.resume_from / "x_scaler.joblib")
+        y_scaler = joblib.load(args.resume_from / "y_scaler.joblib")
+        if x_scaler.n_features_in_ != len(inputs) or y_scaler.n_features_in_ != len(targets):
+            raise ValueError("Saved scalers do not match the model columns.")
+        hidden = checkpoint["hidden"]
+    else:
+        x_scaler, y_scaler = StandardScaler(), StandardScaler()
+        x_scaler.fit(x[train_idx])
+        y_scaler.fit(y[train_idx])
+        hidden = args.hidden
     xs = x_scaler.transform(x).astype(np.float32)
     ys = y_scaler.transform(y).astype(np.float32)
 
@@ -170,11 +192,22 @@ def main() -> None:
         batch_size=args.batch_size, shuffle=True,
     )
     # Adam으로 가중치를 갱신하고, 표준화된 출력의 평균제곱오차(MSE)를 최소화한다.
-    model = MLP(len(inputs), len(targets), args.hidden)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    model = MLP(len(inputs), len(targets), hidden)
+    if checkpoint is not None:
+        model.load_state_dict(checkpoint["state_dict"])
+    learning_rate = args.lr if args.lr is not None else (1e-4 if checkpoint is not None else 1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = nn.MSELoss()
     xv, yv = torch.from_numpy(xs[val_idx]), torch.from_numpy(ys[val_idx])
     best_loss, best_state, best_epoch, stale = float("inf"), None, 0, 0
+    baseline_test = None
+    if checkpoint is not None:
+        model.eval()
+        with torch.no_grad():
+            best_loss = float(loss_fn(model(xv), yv))
+            before = y_scaler.inverse_transform(model(torch.from_numpy(xs[test_idx])).numpy())
+        baseline_test = metrics(y[test_idx], before, targets)
+        best_state = {key: value.detach().clone() for key, value in model.state_dict().items()}
     # 7) 매 epoch 뒤 검증 손실을 확인한다. patience 동안 개선이 없으면 조기 종료한다.
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -195,7 +228,7 @@ def main() -> None:
             stale += 1
             if stale >= args.patience:
                 break
-    # 마지막 epoch가 아니라 검증 성능이 가장 좋았던 가중치를 사용한다.
+    # 기존 모델보다 새 검증 데이터에서 좋아지지 않으면 기존 가중치를 그대로 사용한다.
     assert best_state is not None
     model.load_state_dict(best_state)
     model.eval()
@@ -217,18 +250,39 @@ def main() -> None:
         "source_rows": len(raw), "used_rows": len(clean), "dropped_invalid_rows": dropped,
         "split_rows": {"train": len(train_idx), "validation": len(val_idx), "test": len(test_idx)},
         "seed": args.seed, "best_epoch": best_epoch,
+        "continued_from": str(args.resume_from) if args.resume_from else None,
+        "learning_rate": learning_rate,
+        "baseline_test_metrics": baseline_test,
         "metrics": {
             "train": metrics(y[train_idx], pred[train_idx], targets),
             "validation": metrics(y[val_idx], pred[val_idx], targets),
             "test": metrics(y[test_idx], pred[test_idx], targets),
         },
     }
+    input_ranges_si = {
+        name: [float(x[:, col].min()), float(x[:, col].max())]
+        for col, name in enumerate(inputs)
+    }
+    if checkpoint is not None:
+        old_ranges = checkpoint.get("input_ranges_si")
+        if old_ranges is None:
+            # 이전 버전의 체크포인트에는 범위가 없으므로 기본 학습 CSV에서 복원한다.
+            base_csv = Path(__file__).resolve().parent / "data" / args.preset / f"{args.preset}.csv"
+            if base_csv.exists():
+                base = pd.read_csv(base_csv, usecols=inputs)
+                old_ranges = {name: [float(base[name].min()), float(base[name].max())]
+                              for name in inputs}
+        if old_ranges is not None:
+            for name in inputs:
+                input_ranges_si[name][0] = min(input_ranges_si[name][0], old_ranges[name][0])
+                input_ranges_si[name][1] = max(input_ranges_si[name][1], old_ranges[name][1])
     # 9) 모델, 두 스케일러, 행별 예측값, 평가 지표를 출력 폴더에 저장한다.
     # 나중에 새 데이터를 예측할 때도 같은 스케일러와 모델을 함께 사용해야 한다.
     out.mkdir(parents=True, exist_ok=True)
     torch.save({"state_dict": model.state_dict(), "n_inputs": len(inputs),
-                "n_targets": len(targets), "hidden": args.hidden,
-                "inputs": inputs, "targets": targets}, out / "model.pt")
+                "n_targets": len(targets), "hidden": hidden,
+                "inputs": inputs, "targets": targets,
+                "input_ranges_si": input_ranges_si}, out / "model.pt")
     joblib.dump(x_scaler, out / "x_scaler.joblib")
     joblib.dump(y_scaler, out / "y_scaler.joblib")
     predictions.to_csv(out / "predictions.csv", index=False, encoding="utf-8-sig")

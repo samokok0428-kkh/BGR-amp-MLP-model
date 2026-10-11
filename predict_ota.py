@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
+import sys
 from pathlib import Path
 
 import joblib
@@ -30,13 +31,22 @@ TARGET_DISPLAY = {
     "UGF_Hz": ("MHz", 1e-6, 3),
     "PM_deg": ("deg", 1.0, 3),
     "IDD_A": ("uA", 1e6, 3),
-    **{f"M{i}_sat_V": ("V", 1.0, 4) for i in range(6)},
+    "Vout_V": ("V", 1.0, 4),
+    **{f"M{i}_sat_V": ("V", 1.0, 4) for i in range(8)},
+}
+DISPLAY_OUTPUTS = {
+    "2stage": ["DCGAIN_dB", "UGF_Hz", "PM_deg", "IDD_A", "Vout_V",
+               *(f"M{i}_sat_V" for i in range(8))],
+    "5tr": ["DCGAIN_dB", "UGF_Hz", "PM_deg", "IDD_A", "Vout_V",
+            *(f"M{i}_sat_V" for i in range(6))],
 }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preset", choices=DATA_FILES, required=True, help="Choose the saved circuit model")
+    parser.add_argument("--model-dir", type=Path,
+                        help="Use an updated model folder instead of runs/<preset>")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--values", nargs="+", type=float, metavar="NUMBER",
                       help="Inputs in the displayed order, using um for lengths and uA for current")
@@ -46,8 +56,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_saved_model(preset: str):
-    folder = PROJECT_DIR / "runs" / preset
+def load_saved_model(preset: str, model_dir: Path | None = None):
+    folder = model_dir or PROJECT_DIR / "runs" / preset
     try:
         checkpoint = torch.load(folder / "model.pt", map_location="cpu", weights_only=True)
         x_scaler = joblib.load(folder / "x_scaler.joblib")
@@ -58,7 +68,7 @@ def load_saved_model(preset: str):
     model = MLP(checkpoint["n_inputs"], checkpoint["n_targets"], checkpoint["hidden"])
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
-    return model, x_scaler, y_scaler, inputs, targets
+    return model, x_scaler, y_scaler, inputs, targets, checkpoint.get("input_ranges_si")
 
 
 def get_training_ranges(preset: str, inputs: list[str]) -> dict[str, tuple[float, float]]:
@@ -101,9 +111,14 @@ def choose_values(args: argparse.Namespace, inputs: list[str], ranges: dict[str,
 
 
 def main() -> None:
+    # Keep Korean status text readable in Windows and VS Code terminals.
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     args = parse_args()
-    model, x_scaler, y_scaler, inputs, targets = load_saved_model(args.preset)
-    ranges = get_training_ranges(args.preset, inputs)
+    model, x_scaler, y_scaler, inputs, targets, saved_ranges = load_saved_model(args.preset, args.model_dir)
+    ranges = ({name: (bounds[0] * 1e6, bounds[1] * 1e6)
+               for name, bounds in saved_ranges.items()} if saved_ranges
+              else get_training_ranges(args.preset, inputs))
     values = choose_values(args, inputs, ranges)
     if any(not math.isfinite(value) or value <= 0 for value in values):
         raise SystemExit("All inputs must be positive finite numbers.")
@@ -123,9 +138,13 @@ def main() -> None:
     predicted = y_scaler.inverse_transform(scaled_y)[0]
 
     print("\nPredicted outputs:")
-    for name, value in zip(targets, predicted):
+    available = dict(zip(targets, predicted))
+    for name in dict.fromkeys([*DISPLAY_OUTPUTS[args.preset], *targets]):
+        if name not in available:
+            print(f"  {name:12s} 값 없음 (이 모델에 측정 데이터 없음)")
+            continue
         unit, multiplier, digits = TARGET_DISPLAY.get(name, ("SI units", 1.0, 6))
-        print(f"  {name:12s} {value * multiplier:.{digits}f} {unit}")
+        print(f"  {name:12s} {available[name] * multiplier:.{digits}f} {unit}")
     if any(not ranges[name][0] <= value <= ranges[name][1] for name, value in zip(inputs, values)):
         print("\nOutside-range predictions are extrapolations; check them with Virtuoso before using them.")
 

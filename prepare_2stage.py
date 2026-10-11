@@ -20,7 +20,10 @@ METRIC_COLUMNS = {
     "PM": "PM_deg",
     "IDD": "IDD_A",
 }
-OUTPUT_COLUMNS = ["L01", "L23", "L56", "Ibias", *METRIC_COLUMNS.values()]
+# These outputs were not exported by Virtuoso. Keep empty columns so the schema
+# shows that they are unavailable, without inventing measurement values.
+UNMEASURED_COLUMNS = ["Vout_V", *(f"M{i}_sat_V" for i in range(8))]
+OUTPUT_COLUMNS = ["L01", "L23", "L56", "Ibias", *METRIC_COLUMNS.values(), *UNMEASURED_COLUMNS]
 
 
 def convert(source: Path, destination: Path) -> tuple[int, Counter]:
@@ -67,7 +70,7 @@ def convert(source: Path, destination: Path) -> tuple[int, Counter]:
                         if not math.isfinite(value):
                             raise ValueError(f"Row {row_number}: non-finite {metric} at {lengths}")
                         values.append(value)
-                    writer.writerow([*lengths, bias, *values])
+                    writer.writerow([*lengths, bias, *values, *([""] * len(UNMEASURED_COLUMNS))])
                     counts["simulations"] += 1
                 counts["bias_values"] += 1
         counts["length_combinations"] = len(column_map)

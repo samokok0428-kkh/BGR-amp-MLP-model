@@ -25,7 +25,9 @@ METRIC_COLUMNS = {
     "M4_sat": "M4_sat_V",
     "M5_sat": "M5_sat_V",
 }
-OUTPUT_COLUMNS = ["Li", "Lii", "Lm", "Ib", *METRIC_COLUMNS.values()]
+# Gain, UGF, and Vout are absent from this Virtuoso export.
+UNMEASURED_COLUMNS = ["DCGAIN_dB", "UGF_Hz", "Vout_V"]
+OUTPUT_COLUMNS = ["Li", "Lii", "Lm", "Ib", *METRIC_COLUMNS.values(), *UNMEASURED_COLUMNS]
 
 
 def convert(source: Path, destination: Path) -> Counter:
@@ -74,7 +76,7 @@ def convert(source: Path, destination: Path) -> Counter:
                         if not math.isfinite(value):
                             raise ValueError(f"Row {row_number}: non-finite {metric} at {lengths}")
                         values.append(value)
-                    writer.writerow([*lengths, bias, *values])
+                    writer.writerow([*lengths, bias, *values, *([""] * len(UNMEASURED_COLUMNS))])
                     counts["simulations"] += 1
                 counts["bias_values"] += 1
         counts["length_combinations"] = len(columns)

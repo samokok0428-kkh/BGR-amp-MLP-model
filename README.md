@@ -36,6 +36,8 @@ ota_ml_project/
 | 예측값 | `PM_deg` | degree |
 | 예측값 | `IDD_A` | A |
 
+2-stage 원본에 없는 `Vout_V`와 `M0_sat_V`~`M7_sat_V`는 학습용 CSV에 **빈 열**로 표시합니다. 5TR 원본에 없는 `DCGAIN_dB`, `UGF_Hz`, `Vout_V`도 같은 방식으로 표시합니다. 빈칸은 0이 아니며, 측정되거나 예측된 값도 아닙니다. 현재 모델은 실제 수치가 있는 출력만 학습합니다. `predict_ota.py`는 학습되지 않은 항목을 `값 없음`으로 표시합니다. 해당 값을 예측하려면 Virtuoso에서 실제 값을 추출한 뒤 그 열을 학습 대상으로 지정해 새 모델을 학습해야 합니다.
+
 원본에서 다시 표를 만들려면 프로젝트 폴더의 VS Code 터미널에서 실행합니다.
 
 ```powershell
@@ -88,6 +90,30 @@ CSV 경로는 `--csv` 뒤에서 지정합니다. Python 코드 안에 CSV 내용
 ```
 
 5TR 결과는 `runs/5tr/`에 저장되며 2-stage 모델을 덮어쓰지 않습니다. `--targets`로 일부 출력만 선택할 수도 있습니다. 다른 CSV를 사용할 때는 그 파일의 열 이름에 맞게 `--inputs`와 `--targets`를 지정하세요.
+
+## 기존 모델에 새 CSV로 이어 학습하기
+
+새 CSV는 회로별 학습용 표와 **같은 입력·출력 열 이름, 순서, SI 단위**를 사용해야 합니다. 2-stage와 5TR 모델은 서로 섞지 않습니다. 예를 들어 새 2-stage 데이터를 `data/2stage/new_data.csv`에 넣었다면:
+
+```powershell
+.\.venv_ready\Scripts\python.exe train_ota.py --preset 2stage --csv data\2stage\new_data.csv --resume-from runs\2stage --out runs\2stage_v2 --epochs 100 --patience 20
+```
+
+5TR의 새 데이터라면:
+
+```powershell
+.\.venv_ready\Scripts\python.exe train_ota.py --preset 5tr --csv data\5tr\new_data.csv --resume-from runs\5tr --out runs\5tr_v2 --epochs 100 --patience 20
+```
+
+`--resume-from`은 기존 가중치와 StandardScaler를 읽습니다. 이어 학습에서는 scaler를 다시 맞추지 않으며, 더 작은 학습률 `0.0001`을 사용합니다(`--lr`로 변경 가능). 새 CSV의 70%로 추가 학습하고, 15%로 가장 좋은 시점을 고르며, 나머지 15%로 업데이트 전후 성능을 평가합니다. 결과는 `--out`에 새로 저장되어 원본 모델은 그대로 남습니다. 최소 20개의 유효한 행이 필요합니다. 이전 데이터를 반복 학습하지 않으므로 새 데이터만 계속 학습하면 예전 영역의 성능이 떨어질 수 있습니다. 필요하면 예전 데이터의 일부를 새 CSV에 함께 넣어 주세요.
+
+업데이트된 모델로 예측하려면:
+
+```powershell
+.\.venv_ready\Scripts\python.exe predict_ota.py --preset 2stage --model-dir runs\2stage_v2
+```
+
+다음 업데이트에서는 `--resume-from runs\2stage_v2 --out runs\2stage_v3`처럼 직전 모델을 지정합니다. `metrics.json`의 `baseline_test_metrics`와 `metrics.test`를 비교하면 새 CSV의 테스트 행에서 업데이트 전후 차이를 볼 수 있습니다.
 
 ## 새 입력값으로 예측하기
 
