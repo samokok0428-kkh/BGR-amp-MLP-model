@@ -1,8 +1,3 @@
-# Local Python environments and caches
+# Local Python environments
 .venv/
 .venv_ready/
-__pycache__/
-*.py[cod]
-
-# Editor-specific settings
-.vscode/
