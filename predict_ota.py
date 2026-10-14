@@ -200,6 +200,12 @@ def main() -> None:
             continue
         unit, multiplier, digits = TARGET_DISPLAY.get(name, ("SI units", 1.0, 6))
         print(f"  {name:12s} {available[name] * multiplier:.{digits}f} {unit}")
+    if flags:
+        failed_devices = [name for name, (flag, _) in flags.items() if flag != 1]
+        if failed_devices:
+            print(f"  ALL_SAT      0 (FAIL: {', '.join(failed_devices)} predicted 0)")
+        else:
+            print(f"  ALL_SAT      1 (PASS: all {len(flags)} devices predicted 1)")
     if any(not in_range(value, ranges[name]) for name, value in zip(inputs, values)):
         print("\nOutside-range predictions are extrapolations; check them with Virtuoso before using them.")
 
