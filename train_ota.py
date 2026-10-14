@@ -1,5 +1,5 @@
 
-"""Virtuoso sweep CSV 한 개로 여러 회로 성능을 동시에 예측하는 MLP를 학습한다."""
+"""정리된 Virtuoso CSV 한 개 이상으로 OTA 성능·saturation·region 모델을 학습한다."""
 
 from __future__ import annotations
 
@@ -12,8 +12,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 import joblib
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch import nn
@@ -27,9 +28,24 @@ PRESETS = {
         "inputs": ["L01", "L23", "L56", "Ibias"],
         "targets": ["DCGAIN_dB", "UGF_Hz", "PM_deg", "IDD_A"],
     },
+    # Full row-wise export: continuous outputs, 0/1 saturation flags, and region codes.
+    "2stage_full": {
+        "inputs": ["W01", "W23", "W56", "L01", "L23", "L56",
+                   "W4", "L4", "W7", "L7", "R_c", "C_c", "I_bias"],
+        "targets": ["DCGAIN_dB", "UGF_Hz", "PM_deg", "IDD_A", "Vout_V"],
+        "binary_targets": [f"M{i}_sat_V" for i in range(8)],
+        "region_targets": [f"M{i}_region" for i in range(8)],
+    },
     "5tr": {
         "inputs": ["Li", "Lii", "Lm", "Ib"],
         "targets": ["PM_deg", "IDD_A", "M0_sat_V", "M1_sat_V", "M2_sat_V", "M3_sat_V", "M4_sat_V", "M5_sat_V"],
+    },
+    # The new 5TR files use M*_sat_V for 0/1 flags, unlike the older voltage outputs.
+    "5tr_full": {
+        "inputs": ["Wm", "Wn", "Wp", "Li", "Lii", "Lm", "Ib"],
+        "targets": ["DCGAIN_dB", "UGF_Hz", "PM_deg", "IDD_A", "Vout_V"],
+        "binary_targets": [f"M{i}_sat_V" for i in range(6)],
+        "region_targets": [f"M{i}_region" for i in range(6)],
     },
 }
 
@@ -76,10 +92,33 @@ class MLP(nn.Module):
         return self.net(x)
 
 
+class MultiTaskMLP(nn.Module):
+    """One shared MLP with separate heads for regression, 0/1 flags, and region codes."""
+
+    def __init__(self, n_inputs: int, n_targets: int, n_binary: int,
+                 region_class_counts: list[int], hidden: int):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Linear(n_inputs, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+        )
+        self.regression = nn.Linear(hidden, n_targets)
+        self.binary = nn.Linear(hidden, n_binary)
+        self.regions = nn.ModuleList(
+            nn.Linear(hidden, count) for count in region_class_counts
+        )
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
+        features = self.features(x)
+        return (self.regression(features), self.binary(features),
+                [head(features) for head in self.regions])
+
+
 def parse_args() -> argparse.Namespace:
     """터미널 실행 옵션을 읽는다. --csv만 필수이고 나머지는 기본값이 있다."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--csv", required=True, type=Path, help="Virtuoso export CSV")
+    parser.add_argument("--csv", required=True, type=Path, nargs="+",
+                        help="One or more row-wise training CSV files; duplicate rows are removed")
     parser.add_argument("--out", type=Path, help="Result folder (default: runs/<preset>)")
     parser.add_argument("--resume-from", type=Path,
                         help="Continue training from a folder containing model.pt and both scalers; requires --out")
@@ -121,6 +160,183 @@ def metrics(y_true: np.ndarray, y_pred: np.ndarray, targets: list[str]) -> dict:
     return result
 
 
+def class_metrics(actual: np.ndarray, predicted: np.ndarray,
+                  names: list[str]) -> dict:
+    """Report class balance as well as accuracy; all-one flags are not informative."""
+    return {
+        name: {
+            "accuracy": float(accuracy_score(actual[:, col], predicted[:, col])),
+            "macro_F1": float(f1_score(actual[:, col], predicted[:, col],
+                                      average="macro", zero_division=0)),
+            "actual_counts": {str(int(value)): int(count) for value, count in
+                              zip(*np.unique(actual[:, col], return_counts=True))},
+        }
+        for col, name in enumerate(names)
+    }
+
+
+def train_multitask(args: argparse.Namespace, raw: pd.DataFrame, clean: pd.DataFrame,
+                    inputs: list[str], targets: list[str], binary_targets: list[str],
+                    region_targets: list[str], train_idx: np.ndarray,
+                    val_idx: np.ndarray, test_idx: np.ndarray, out: Path,
+                    source_rows: int, duplicate_rows: int, dropped: int) -> None:
+    """Train the full export without treating flags or region codes as voltages."""
+    x = clean[inputs].to_numpy(dtype=np.float32)
+    y = clean[targets].to_numpy(dtype=np.float32)
+    binary = clean[binary_targets].to_numpy(dtype=np.float32)
+    if not np.isin(binary, (0, 1)).all():
+        raise ValueError("Saturation flag columns must contain only 0 or 1.")
+    region_values = clean[region_targets].to_numpy(dtype=np.float64)
+    if not np.equal(region_values, np.floor(region_values)).all():
+        raise ValueError("Region columns must contain integer codes.")
+    region_values = region_values.astype(np.int64)
+    region_classes = [sorted(np.unique(region_values[:, col]).tolist())
+                      for col in range(len(region_targets))]
+
+    checkpoint = None
+    if args.resume_from:
+        checkpoint = torch.load(args.resume_from / "model.pt", map_location="cpu", weights_only=True)
+        if (checkpoint.get("model_type") != "multitask" or
+                checkpoint["inputs"] != inputs or checkpoint["targets"] != targets or
+                checkpoint["binary_targets"] != binary_targets or
+                checkpoint["region_targets"] != region_targets or
+                checkpoint["region_classes"] != region_classes):
+            raise ValueError("Saved model schema or region codes differ; train from scratch instead.")
+        x_scaler = joblib.load(args.resume_from / "x_scaler.joblib")
+        y_scaler = joblib.load(args.resume_from / "y_scaler.joblib")
+        hidden = checkpoint["hidden"]
+    else:
+        x_scaler, y_scaler = StandardScaler(), StandardScaler()
+        x_scaler.fit(x[train_idx])
+        y_scaler.fit(y[train_idx])
+        hidden = args.hidden
+    xs = x_scaler.transform(x).astype(np.float32)
+    ys = y_scaler.transform(y).astype(np.float32)
+    region_index = np.column_stack([
+        np.searchsorted(classes, region_values[:, col])
+        for col, classes in enumerate(region_classes)
+    ]).astype(np.int64)
+    model = MultiTaskMLP(len(inputs), len(targets), len(binary_targets),
+                         [len(classes) for classes in region_classes], hidden)
+    if checkpoint is not None:
+        model.load_state_dict(checkpoint["state_dict"])
+    learning_rate = args.lr if args.lr is not None else (1e-4 if checkpoint else 1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    loader = DataLoader(TensorDataset(
+        torch.from_numpy(xs[train_idx]), torch.from_numpy(ys[train_idx]),
+        torch.from_numpy(binary[train_idx]), torch.from_numpy(region_index[train_idx])),
+        batch_size=args.batch_size, shuffle=True)
+    xv = torch.from_numpy(xs[val_idx])
+    yv = torch.from_numpy(ys[val_idx])
+    bv = torch.from_numpy(binary[val_idx])
+    rv = torch.from_numpy(region_index[val_idx])
+
+    def loss_for(xb, yb, bb, rb):
+        reg_pred, binary_logits, region_logits = model(xb)
+        reg_loss = F.mse_loss(reg_pred, yb)
+        binary_loss = F.binary_cross_entropy_with_logits(binary_logits, bb)
+        region_loss = torch.stack([
+            F.cross_entropy(logits, rb[:, col])
+            for col, logits in enumerate(region_logits)
+        ]).mean()
+        return reg_loss + binary_loss + region_loss
+
+    def predict_rows(indices: np.ndarray):
+        model.eval()
+        with torch.no_grad():
+            reg, binary_logits, region_logits = model(torch.from_numpy(xs[indices]))
+            reg_pred = y_scaler.inverse_transform(reg.numpy())
+            probabilities = torch.sigmoid(binary_logits).numpy()
+            binary_pred = (probabilities >= 0.5).astype(np.int64)
+            region_pred = np.column_stack([
+                np.asarray(classes)[logits.argmax(dim=1).numpy()]
+                for classes, logits in zip(region_classes, region_logits)
+            ])
+        return reg_pred, probabilities, binary_pred, region_pred
+
+    best_loss, best_state, best_epoch, stale = float("inf"), None, 0, 0
+    baseline_test = None
+    if checkpoint is not None:
+        with torch.no_grad():
+            best_loss = float(loss_for(xv, yv, bv, rv))
+        old_reg, _, old_bin, old_region = predict_rows(test_idx)
+        baseline_test = {
+            "regression": metrics(y[test_idx], old_reg, targets),
+            "saturation": class_metrics(binary[test_idx], old_bin, binary_targets),
+            "region": class_metrics(region_values[test_idx], old_region, region_targets),
+        }
+        best_state = {key: value.detach().clone() for key, value in model.state_dict().items()}
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        for xb, yb, bb, rb in loader:
+            optimizer.zero_grad()
+            loss_for(xb, yb, bb, rb).backward()
+            optimizer.step()
+        model.eval()
+        with torch.no_grad():
+            val_loss = float(loss_for(xv, yv, bv, rv))
+        if val_loss < best_loss - 1e-6:
+            best_loss = val_loss
+            best_state = {key: value.detach().clone() for key, value in model.state_dict().items()}
+            best_epoch, stale = epoch, 0
+        else:
+            stale += 1
+            if stale >= args.patience:
+                break
+    assert best_state is not None
+    model.load_state_dict(best_state)
+    reg_pred, probabilities, binary_pred, region_pred = predict_rows(np.arange(len(clean)))
+    splits = np.empty(len(clean), dtype=object)
+    splits[train_idx], splits[val_idx], splits[test_idx] = "train", "validation", "test"
+    predictions = clean[inputs + targets + binary_targets + region_targets].copy()
+    predictions.insert(0, "source_csv", raw.loc[clean.index, "__source_csv"].to_numpy())
+    predictions.insert(1, "source_csv_row", raw.loc[clean.index, "__source_row"].to_numpy())
+    predictions.insert(2, "split", splits)
+    for col, name in enumerate(targets):
+        predictions[f"pred_{name}"] = reg_pred[:, col]
+    for col, name in enumerate(binary_targets):
+        predictions[f"pred_{name}"] = binary_pred[:, col]
+        predictions[f"prob_{name}"] = probabilities[:, col]
+    for col, name in enumerate(region_targets):
+        predictions[f"pred_{name}"] = region_pred[:, col]
+    report = {
+        "csv": [str(path) for path in args.csv], "preset": args.preset,
+        "inputs": inputs, "targets": targets,
+        "binary_targets": binary_targets, "region_targets": region_targets,
+        "source_rows": source_rows, "duplicate_rows_removed": duplicate_rows,
+        "used_rows": len(clean), "dropped_invalid_rows": dropped,
+        "split_rows": {"train": len(train_idx), "validation": len(val_idx), "test": len(test_idx)},
+        "seed": args.seed, "best_epoch": best_epoch, "learning_rate": learning_rate,
+        "continued_from": str(args.resume_from) if args.resume_from else None,
+        "baseline_test_metrics": baseline_test,
+        "metrics": {part: metrics(y[idx], reg_pred[idx], targets)
+                    for part, idx in (("train", train_idx), ("validation", val_idx), ("test", test_idx))},
+        "saturation_metrics": {part: class_metrics(binary[idx], binary_pred[idx], binary_targets)
+                               for part, idx in (("train", train_idx), ("validation", val_idx), ("test", test_idx))},
+        "region_metrics": {part: class_metrics(region_values[idx], region_pred[idx], region_targets)
+                           for part, idx in (("train", train_idx), ("validation", val_idx), ("test", test_idx))},
+    }
+    input_ranges_si = {name: [float(x[:, col].min()), float(x[:, col].max())]
+                       for col, name in enumerate(inputs)}
+    if checkpoint is not None:
+        for name, bounds in checkpoint.get("input_ranges_si", {}).items():
+            input_ranges_si[name][0] = min(input_ranges_si[name][0], bounds[0])
+            input_ranges_si[name][1] = max(input_ranges_si[name][1], bounds[1])
+    out.mkdir(parents=True, exist_ok=True)
+    torch.save({"model_type": "multitask", "state_dict": model.state_dict(),
+                "n_inputs": len(inputs), "n_targets": len(targets),
+                "hidden": hidden, "inputs": inputs, "targets": targets,
+                "binary_targets": binary_targets, "region_targets": region_targets,
+                "region_classes": region_classes, "input_ranges_si": input_ranges_si},
+               out / "model.pt")
+    joblib.dump(x_scaler, out / "x_scaler.joblib")
+    joblib.dump(y_scaler, out / "y_scaler.joblib")
+    predictions.to_csv(out / "predictions.csv", index=False, encoding="utf-8-sig")
+    (out / "metrics.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Saved {len(clean)} rows to {out.resolve()} (best epoch {best_epoch})")
+    print(json.dumps(report["metrics"]["test"], indent=2, ensure_ascii=False))
+
+
 def main() -> None:
     # 1) 실행 옵션과 CSV 컬럼 설정을 확인한다.
     args = parse_args()
@@ -132,6 +348,8 @@ def main() -> None:
         raise ValueError("--resume-from requires --out so the original model is preserved.")
     inputs = args.inputs or PRESETS[args.preset]["inputs"]
     targets = args.targets or PRESETS[args.preset]["targets"]
+    binary_targets = PRESETS[args.preset].get("binary_targets", [])
+    region_targets = PRESETS[args.preset].get("region_targets", [])
     if not inputs or not targets:
         raise ValueError(
             f"{args.preset} needs both --inputs and --targets with the exact CSV headers."
@@ -139,21 +357,28 @@ def main() -> None:
     out = args.out or Path("runs") / args.preset
     if args.resume_from and out.resolve() == args.resume_from.resolve():
         raise ValueError("--out must differ from --resume-from to preserve the original model.")
-    columns = inputs + targets
+    columns = inputs + targets + binary_targets + region_targets
     if len(columns) != len(set(columns)):
         raise ValueError("Input and target column names must be unique.")
 
     # 2) 난수 시드를 고정하고 CSV를 읽는다. 헤더 앞뒤 공백은 제거한다.
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    raw = pd.read_csv(args.csv, encoding=args.encoding)
-    raw.columns = raw.columns.str.strip()
-    missing = [col for col in columns if col not in raw.columns]
-    if missing:
-        raise ValueError(
-            f"Missing CSV columns: {missing}\nAvailable columns: {raw.columns.tolist()}\n"
-            "Pass the exact headers with --inputs and --targets."
-        )
+    frames = []
+    for csv_path in args.csv:
+        frame = pd.read_csv(csv_path, encoding=args.encoding)
+        frame.columns = frame.columns.str.strip()
+        missing = [col for col in columns if col not in frame.columns]
+        if missing:
+            raise ValueError(f"{csv_path}: missing CSV columns {missing}; "
+                             f"available: {frame.columns.tolist()}")
+        frame["__source_csv"] = str(csv_path)
+        frame["__source_row"] = np.arange(len(frame)) + 2
+        frames.append(frame)
+    raw = pd.concat(frames, ignore_index=True)
+    source_rows = len(raw)
+    raw = raw.drop_duplicates(subset=columns, keep="first").reset_index(drop=True)
+    duplicate_rows = source_rows - len(raw)
 
     # 3) 단위 접두어를 숫자로 바꾸고, 입력/출력 중 하나라도 실패한 행은 제외한다.
     # 실패 행 수는 metrics.json에 기록한다. 이 회귀 모델은 실패 여부를 학습하지 않는다.
@@ -163,6 +388,10 @@ def main() -> None:
     dropped = int((~valid).sum())
     # 4) 데이터 분할 후 입력 X와 정답 Y를 float32 배열로 만든다.
     train_idx, val_idx, test_idx = split_indices(len(clean), args.seed)
+    if binary_targets or region_targets:
+        train_multitask(args, raw, clean, inputs, targets, binary_targets, region_targets,
+                        train_idx, val_idx, test_idx, out, source_rows, duplicate_rows, dropped)
+        return
     x = clean[inputs].to_numpy(dtype=np.float32)
     y = clean[targets].to_numpy(dtype=np.float32)
     # 5) 처음 학습할 때만 scaler를 fit한다. 이어 학습에서는 기존 모델의 좌표계를 유지한다.
@@ -240,14 +469,16 @@ def main() -> None:
     splits = np.empty(len(clean), dtype=object)
     splits[train_idx], splits[val_idx], splits[test_idx] = "train", "validation", "test"
     predictions = clean.copy()
-    predictions.insert(0, "source_csv_row", clean.index.to_numpy() + 2)
-    predictions.insert(1, "split", splits)
+    predictions.insert(0, "source_csv", raw.loc[clean.index, "__source_csv"].to_numpy())
+    predictions.insert(1, "source_csv_row", raw.loc[clean.index, "__source_row"].to_numpy())
+    predictions.insert(2, "split", splits)
     for col, name in enumerate(targets):
         predictions[f"pred_{name}"] = pred[:, col]
     # 각 분할의 오차를 별도로 기록한다. 모델 비교에는 보지 않은 test 지표를 사용한다.
     report = {
-        "csv": str(args.csv), "inputs": inputs, "targets": targets,
-        "source_rows": len(raw), "used_rows": len(clean), "dropped_invalid_rows": dropped,
+        "csv": [str(path) for path in args.csv], "inputs": inputs, "targets": targets,
+        "source_rows": source_rows, "duplicate_rows_removed": duplicate_rows,
+        "used_rows": len(clean), "dropped_invalid_rows": dropped,
         "split_rows": {"train": len(train_idx), "validation": len(val_idx), "test": len(test_idx)},
         "seed": args.seed, "best_epoch": best_epoch,
         "continued_from": str(args.resume_from) if args.resume_from else None,

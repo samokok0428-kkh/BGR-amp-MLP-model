@@ -153,3 +153,29 @@ py -m venv .venv_new
 ```
 
 그 PC에서는 실행 명령의 `.venv_ready`를 `.venv_new`로 바꾸세요. `.venv_ready`는 이 PC의 Python 설치를 참조하므로 다른 PC로 복사해 그대로 사용할 수 없습니다.
+
+## 새 random CSV: 전체 입력·출력 스키마
+
+`5tr_full`은 이미 행과 열이 정리된 `ota_dataset_*.csv`를 바로 읽습니다. 입력은 `Wm,Wn,Wp,Li,Lii,Lm,Ib` 7개입니다. `2stage_full`은 새 2-stage CSV용 설정으로, 입력은 `W01,W23,W56,L01,L23,L56,W4,L4,W7,L7,R_c,C_c,I_bias` 13개입니다. **2-stage 전체 스키마의 실제 CSV는 아직 추가되지 않았으므로**, 파일을 받으면 헤더와 단위를 확인해야 합니다. 새 입력 차원은 옛 모델과 다르므로 첫 학습은 `--resume-from` 없이 진행합니다.
+
+두 전체 스키마는 Gain(`DCGAIN_dB`), UGF(`UGF_Hz`), PM(`PM_deg`), IDD(`IDD_A`), Vout(`Vout_V`)을 숫자로 예측하고, `M*_sat_V`를 **0/1 saturation flag**, `M*_region`을 **region 코드**로 분류합니다. 새 5TR CSV에서 `M*_sat_V` 값은 전압이 아니라 대부분 0/1입니다. 옛 `5tr.csv`의 같은 이름 열은 전압값이므로, 옛 데이터와 새 데이터를 한 모델에 섞지 마세요. 새 CSV에서 포화 실패(0)는 매우 드물어 saturation 분류 결과를 신뢰하려면 실패 사례를 더 수집해야 합니다. region 코드의 물리적 의미는 Virtuoso 설정에서 확인하세요.
+
+세 5TR 파일을 모두 이용해 새 모델을 처음부터 학습할 때:
+
+```powershell
+.\.venv_ready\Scripts\python.exe train_ota.py --preset 5tr_full --csv data\5tr\ota_dataset_3000.csv data\5tr\ota_dataset_3000b.csv data\5tr\ota_dataset_8000.csv --out runs\5tr_full
+```
+
+`--csv` 뒤에 여러 파일을 나열할 수 있습니다. 코드가 완전히 같은 행을 하나로 합칩니다. 현재 `ota_dataset_8000.csv`에는 이름과 달리 **863개 데이터 행**이 있습니다. 예측은:
+
+```powershell
+.\.venv_ready\Scripts\python.exe predict_ota.py --preset 5tr_full --model-dir runs\5tr_full
+```
+
+새 2-stage CSV를 `data/2stage/2stage_full.csv`에 넣은 뒤에는:
+
+```powershell
+.\.venv_ready\Scripts\python.exe train_ota.py --preset 2stage_full --csv data\2stage\2stage_full.csv --out runs\2stage_full
+```
+
+예측 화면의 W·L은 µm, 전류는 µA, `R_c`는 kΩ, `C_c`는 pF로 입력합니다. CSV 자체는 m·A·Ω·F의 SI 단위를 사용해야 합니다. 새 데이터가 매일 쌓이면 같은 스키마의 모든 CSV로 **처음부터 다시 학습**하는 것을 기본으로 권장합니다. 새 데이터만으로 이어 학습하면 이전 설계 범위의 성능이 떨어질 수 있고, 입력·출력 종류가 바뀌면 이어 학습 자체가 불가능합니다. 성능을 날짜별로 비교하려면 별도의 고정된 테스트 세트를 계속 보관해야 합니다.

@@ -1,0 +1,425 @@
+{
+  "csv": [
+    "data\\5tr\\ota_dataset_3000.csv",
+    "data\\5tr\\ota_dataset_3000b.csv",
+    "data\\5tr\\ota_dataset_8000.csv"
+  ],
+  "preset": "5tr_full",
+  "inputs": [
+    "Wm",
+    "Wn",
+    "Wp",
+    "Li",
+    "Lii",
+    "Lm",
+    "Ib"
+  ],
+  "targets": [
+    "DCGAIN_dB",
+    "UGF_Hz",
+    "PM_deg",
+    "IDD_A",
+    "Vout_V"
+  ],
+  "binary_targets": [
+    "M0_sat_V",
+    "M1_sat_V",
+    "M2_sat_V",
+    "M3_sat_V",
+    "M4_sat_V",
+    "M5_sat_V"
+  ],
+  "region_targets": [
+    "M0_region",
+    "M1_region",
+    "M2_region",
+    "M3_region",
+    "M4_region",
+    "M5_region"
+  ],
+  "source_rows": 6865,
+  "duplicate_rows_removed": 2,
+  "used_rows": 6863,
+  "dropped_invalid_rows": 0,
+  "split_rows": {
+    "train": 4804,
+    "validation": 1029,
+    "test": 1030
+  },
+  "seed": 42,
+  "best_epoch": 76,
+  "learning_rate": 0.001,
+  "continued_from": null,
+  "baseline_test_metrics": null,
+  "metrics": {
+    "train": {
+      "DCGAIN_dB": {
+        "MAE": 0.4792216122150421,
+        "RMSE": 0.6177865754526595,
+        "R2": 0.9890548586845398
+      },
+      "UGF_Hz": {
+        "MAE": 235869.3125,
+        "RMSE": 313079.3130438356,
+        "R2": 0.9920662641525269
+      },
+      "PM_deg": {
+        "MAE": 0.08685602992773056,
+        "RMSE": 0.12576098811989975,
+        "R2": 0.9857060313224792
+      },
+      "IDD_A": {
+        "MAE": 4.4073107119402266e-07,
+        "RMSE": 5.599329138029911e-07,
+        "R2": 0.9970587491989136
+      },
+      "Vout_V": {
+        "MAE": 0.00010516141628613696,
+        "RMSE": 0.00015569595770141065,
+        "R2": 0.977677583694458
+      }
+    },
+    "validation": {
+      "DCGAIN_dB": {
+        "MAE": 0.4949113130569458,
+        "RMSE": 0.6317523741849209,
+        "R2": 0.9879631400108337
+      },
+      "UGF_Hz": {
+        "MAE": 241711.078125,
+        "RMSE": 321420.6927003923,
+        "R2": 0.991265058517456
+      },
+      "PM_deg": {
+        "MAE": 0.09179264307022095,
+        "RMSE": 0.1315680855813496,
+        "R2": 0.9849622249603271
+      },
+      "IDD_A": {
+        "MAE": 4.396913197979302e-07,
+        "RMSE": 5.504318317020406e-07,
+        "R2": 0.9970301985740662
+      },
+      "Vout_V": {
+        "MAE": 0.00010869291872950271,
+        "RMSE": 0.00016899853045424301,
+        "R2": 0.9686442017555237
+      }
+    },
+    "test": {
+      "DCGAIN_dB": {
+        "MAE": 0.4948471486568451,
+        "RMSE": 0.6456943998306918,
+        "R2": 0.9871743321418762
+      },
+      "UGF_Hz": {
+        "MAE": 248118.828125,
+        "RMSE": 337100.20558878337,
+        "R2": 0.990455687046051
+      },
+      "PM_deg": {
+        "MAE": 0.08423925191164017,
+        "RMSE": 0.11648454833065776,
+        "R2": 0.9867656826972961
+      },
+      "IDD_A": {
+        "MAE": 4.414458771861973e-07,
+        "RMSE": 5.568696224654808e-07,
+        "R2": 0.9968340992927551
+      },
+      "Vout_V": {
+        "MAE": 0.000108891494164709,
+        "RMSE": 0.0001643595242649165,
+        "R2": 0.9719403982162476
+      }
+    }
+  },
+  "saturation_metrics": {
+    "train": {
+      "M0_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 4804
+        }
+      },
+      "M1_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 4804
+        }
+      },
+      "M2_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 4804
+        }
+      },
+      "M3_sat_V": {
+        "accuracy": 0.9989592006661115,
+        "macro_F1": 0.4997396646881183,
+        "actual_counts": {
+          "0": 5,
+          "1": 4799
+        }
+      },
+      "M4_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 4804
+        }
+      },
+      "M5_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 4804
+        }
+      }
+    },
+    "validation": {
+      "M0_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1029
+        }
+      },
+      "M1_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1029
+        }
+      },
+      "M2_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1029
+        }
+      },
+      "M3_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1029
+        }
+      },
+      "M4_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1029
+        }
+      },
+      "M5_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1029
+        }
+      }
+    },
+    "test": {
+      "M0_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1030
+        }
+      },
+      "M1_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1030
+        }
+      },
+      "M2_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1030
+        }
+      },
+      "M3_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1030
+        }
+      },
+      "M4_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1030
+        }
+      },
+      "M5_sat_V": {
+        "accuracy": 1.0,
+        "macro_F1": 1.0,
+        "actual_counts": {
+          "1": 1030
+        }
+      }
+    }
+  },
+  "region_metrics": {
+    "train": {
+      "M0_region": {
+        "accuracy": 0.9929225645295587,
+        "macro_F1": 0.9870966641050013,
+        "actual_counts": {
+          "2": 4022,
+          "3": 782
+        }
+      },
+      "M1_region": {
+        "accuracy": 0.9933388842631141,
+        "macro_F1": 0.98788039330697,
+        "actual_counts": {
+          "2": 4018,
+          "3": 786
+        }
+      },
+      "M2_region": {
+        "accuracy": 0.988759367194005,
+        "macro_F1": 0.9607602541925249,
+        "actual_counts": {
+          "2": 4430,
+          "3": 374
+        }
+      },
+      "M3_region": {
+        "accuracy": 0.9875104079933389,
+        "macro_F1": 0.639602049473302,
+        "actual_counts": {
+          "1": 5,
+          "2": 4429,
+          "3": 370
+        }
+      },
+      "M4_region": {
+        "accuracy": 0.9931307243963364,
+        "macro_F1": 0.9930350649499569,
+        "actual_counts": {
+          "2": 2114,
+          "3": 2690
+        }
+      },
+      "M5_region": {
+        "accuracy": 0.9931307243963364,
+        "macro_F1": 0.9930350649499569,
+        "actual_counts": {
+          "2": 2116,
+          "3": 2688
+        }
+      }
+    },
+    "validation": {
+      "M0_region": {
+        "accuracy": 0.9873663751214772,
+        "macro_F1": 0.9779714354877753,
+        "actual_counts": {
+          "2": 848,
+          "3": 181
+        }
+      },
+      "M1_region": {
+        "accuracy": 0.9873663751214772,
+        "macro_F1": 0.9780683705473152,
+        "actual_counts": {
+          "2": 848,
+          "3": 181
+        }
+      },
+      "M2_region": {
+        "accuracy": 0.9834791059280855,
+        "macro_F1": 0.9504785684560966,
+        "actual_counts": {
+          "2": 935,
+          "3": 94
+        }
+      },
+      "M3_region": {
+        "accuracy": 0.9854227405247813,
+        "macro_F1": 0.9558844965516453,
+        "actual_counts": {
+          "2": 935,
+          "3": 94
+        }
+      },
+      "M4_region": {
+        "accuracy": 0.9863945578231292,
+        "macro_F1": 0.9860443759009254,
+        "actual_counts": {
+          "2": 431,
+          "3": 598
+        }
+      },
+      "M5_region": {
+        "accuracy": 0.9863945578231292,
+        "macro_F1": 0.9860443759009254,
+        "actual_counts": {
+          "2": 431,
+          "3": 598
+        }
+      }
+    },
+    "test": {
+      "M0_region": {
+        "accuracy": 0.9689320388349515,
+        "macro_F1": 0.9436388508891929,
+        "actual_counts": {
+          "2": 858,
+          "3": 172
+        }
+      },
+      "M1_region": {
+        "accuracy": 0.9689320388349515,
+        "macro_F1": 0.9436388508891929,
+        "actual_counts": {
+          "2": 858,
+          "3": 172
+        }
+      },
+      "M2_region": {
+        "accuracy": 0.9766990291262136,
+        "macro_F1": 0.9283860202095114,
+        "actual_counts": {
+          "2": 940,
+          "3": 90
+        }
+      },
+      "M3_region": {
+        "accuracy": 0.9766990291262136,
+        "macro_F1": 0.9276761577081065,
+        "actual_counts": {
+          "2": 942,
+          "3": 88
+        }
+      },
+      "M4_region": {
+        "accuracy": 0.9825242718446602,
+        "macro_F1": 0.9823226544622425,
+        "actual_counts": {
+          "2": 460,
+          "3": 570
+        }
+      },
+      "M5_region": {
+        "accuracy": 0.9825242718446602,
+        "macro_F1": 0.9823300001143689,
+        "actual_counts": {
+          "2": 461,
+          "3": 569
+        }
+      }
+    }
+  }
+}

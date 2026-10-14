@@ -1,4 +1,4 @@
-"""Convert a wide Virtuoso 2-stage sweep export into one row per simulation."""
+
 
 from __future__ import annotations
 
